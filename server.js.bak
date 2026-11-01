@@ -1,0 +1,663 @@
+// server.js
+// Print Proxy / Bridge untuk Odoo (POS Kasir Thermal & Dot Matrix)
+// Menggunakan template print FULL langsung dari Odoo:
+// 1. Dot Matrix (Surat Jalan, Invoice, PO, SO, Picking Note) -> plain text / ESC/P dari mail.template Odoo
+// 2. POS Struk Kasir -> XML receipt dari QWeb (PosBox emulation & custom proxy)
+
+const express = require("express");
+const cors = require("cors");
+const fs = require("fs");
+const net = require("net");
+const { exec } = require("child_process");
+const sax = require("sax");
+const { printer: ThermalPrinter, types: PrinterTypes } = require("node-thermal-printer");
+const config = require("./config");
+
+const app = express();
+app.use(cors());
+
+// Middleware parser
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
+app.use(express.text({ type: ["text/xml", "application/xml", "text/plain"], limit: "20mb" }));
+
+// ---------------------------------------------------------------------------
+// 1. HELPER: THERMAL PRINTER (ESC/POS)
+// ---------------------------------------------------------------------------
+function buildPrinter({ printerName, connection }) {
+  let mode, target;
+
+  if (connection) {
+    mode = connection.mode;
+    target = connection.target;
+  } else {
+    const name = printerName || config.defaultPrinter;
+    const profile = config.printers[name];
+    if (!profile) {
+      throw new Error(`Printer profile '${name}' tidak ditemukan di config.js`);
+    }
+    mode = profile.mode;
+    target = profile.target;
+  }
+
+  let interfaceString;
+  if (mode === "lan") {
+    interfaceString = `tcp://${target.address}:${target.port}`;
+  } else if (mode === "usb" || mode === "bluetooth") {
+    interfaceString = target;
+  } else {
+    throw new Error(`Mode printer '${mode}' tidak dikenali (pakai: usb, bluetooth, lan)`);
+  }
+
+  return new ThermalPrinter({
+    type: PrinterTypes.EPSON,
+    interface: interfaceString,
+    width: config.charsPerLine || 48,
+    removeSpecialCharacters: false,
+    options: { timeout: 5000 },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 2. HELPER: RAW PRINTING (DOT MATRIX / PLAIN TEXT ESC/P)
+// ---------------------------------------------------------------------------
+function printRawData({ printerName, connection, data }) {
+  return new Promise((resolve, reject) => {
+    let mode, target;
+
+    if (connection) {
+      mode = connection.mode;
+      target = connection.target;
+    } else {
+      // Gunakan profil dotmatrix jika ada, atau printer yang diminta / default
+      const name = printerName || (config.printers.dotmatrix ? "dotmatrix" : config.defaultPrinter);
+      const profile = config.printers[name];
+      if (!profile) {
+        return reject(new Error(`Printer profile '${name}' tidak ditemukan di config.js`));
+      }
+      mode = profile.mode;
+      target = profile.target;
+    }
+
+    if (!data) {
+      return reject(new Error("Data cetak (data) kosong"));
+    }
+
+    if (mode === "lan") {
+      const client = new net.Socket();
+      client.setTimeout(5000);
+      client.connect(target.port || 9100, target.address, () => {
+        client.write(data, "binary", () => {
+          client.end();
+          resolve();
+        });
+      });
+      client.on("error", (err) => reject(err));
+      client.on("timeout", () => {
+        client.destroy();
+        reject(new Error(`Timeout koneksi printer LAN di ${target.address}:${target.port}`));
+      });
+    } else if (mode === "usb" || mode === "bluetooth") {
+      // Linux: /dev/usb/lp0, /dev/usb/lp1 | Windows: LPT1, COM1, dll.
+      fs.writeFile(target, Buffer.from(data, "binary"), (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
+    } else if (mode === "cups" || mode === "printer") {
+      // Cetak via command spooler OS (lpr -P <nama_printer> -o raw)
+      const child = exec(`lpr -P "${target}" -o raw`, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr || err.message));
+        resolve();
+      });
+      child.stdin.write(data, "binary");
+      child.stdin.end();
+    } else {
+      reject(new Error(`Mode printer '${mode}' tidak didukung untuk raw print`));
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 3. HELPER: XML RECEIPT RENDERER (PARSE TEMPLATE STRUK ODOO POS KE ESC/POS)
+// ---------------------------------------------------------------------------
+async function renderXmlReceipt(printer, xmlString) {
+  let cleanXml = xmlString.trim();
+  const receiptStart = cleanXml.indexOf("<receipt");
+  if (receiptStart !== -1) {
+    cleanXml = cleanXml.substring(receiptStart);
+  }
+  const receiptEnd = cleanXml.lastIndexOf("</receipt>");
+  if (receiptEnd !== -1) {
+    cleanXml = cleanXml.substring(0, receiptEnd + 10);
+  }
+
+  return new Promise((resolve, reject) => {
+    const parser = sax.parser(false, { lowercase: true, trim: false });
+
+    const tagStack = [];
+    let currentLine = null;
+    let currentSection = null; // 'left' | 'right' | 'center'
+    let currentAlign = "center";
+    let blockBuffer = "";
+    let isBold = false;
+    let isDoubleHeight = false;
+
+    let receiptWidth = config.charsPerLine || 48;
+
+    function flushBlockBuffer() {
+      const clean = blockBuffer.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+      if (clean) {
+        // Cek apakah teks berupa garis pembatas (mis. '--------------------------------')
+        const isDivider = /^[-=_\.]{5,}$/.test(clean);
+        if (isDivider) {
+          // Garis pembatas SELALU dicetak dari margin kiri selebar kertas (full width) persis PosBox
+          printer.alignLeft();
+          printer.println("-".repeat(receiptWidth));
+          setPrinterAlign(printer, currentAlign);
+        } else {
+          printer.println(clean);
+        }
+      }
+      blockBuffer = "";
+    }
+
+    parser.onerror = (err) => {
+      console.warn("XML Receipt non-fatal parse warning:", err.message);
+    };
+
+    parser.onopentag = (node) => {
+      const tag = node.name;
+      const attrs = node.attributes || {};
+      tagStack.push({ tag, attrs });
+
+      if (tag === "receipt") {
+        // Gunakan width dari template hanya jika config.charsPerLine belum ditentukan
+        if (!config.charsPerLine && attrs.width) {
+          const parsedWidth = parseInt(attrs.width, 10);
+          if (!isNaN(parsedWidth) && parsedWidth > 0) {
+            receiptWidth = parsedWidth;
+          }
+        }
+        if (attrs.align) {
+          currentAlign = attrs.align.toLowerCase();
+          setPrinterAlign(printer, currentAlign);
+        }
+      } else if (tag === "div" || tag === "p" || tag === "header" || tag === "footer") {
+        flushBlockBuffer();
+        if (attrs.align) {
+          setPrinterAlign(printer, attrs.align.toLowerCase());
+        }
+        if (attrs.size === "double-height" || attrs.size === "double") {
+          printer.setTextDoubleHeight();
+          isDoubleHeight = true;
+        }
+      } else if (tag === "b" || tag === "strong" || tag.match(/^h[1-5]$/)) {
+        printer.bold(true);
+        isBold = true;
+        if (tag === "h1" || tag === "h2" || attrs.size === "double") {
+          printer.setTextDoubleWidth();
+          printer.setTextDoubleHeight();
+        } else if (tag === "h3" || tag === "h4" || attrs.size === "double-height") {
+          printer.setTextDoubleHeight();
+        }
+      } else if (tag === "pre") {
+        flushBlockBuffer();
+        if (attrs.size === "double-height" || attrs.size === "double") {
+          printer.setTextDoubleHeight();
+          isDoubleHeight = true;
+        }
+        if (attrs.align) {
+          setPrinterAlign(printer, attrs.align.toLowerCase());
+        }
+      } else if (tag === "line") {
+        flushBlockBuffer();
+        currentLine = {
+          left: "",
+          right: "",
+          center: "",
+          indent: parseInt(attrs.indent, 10) || 0,
+          size: attrs.size || (attrs.class && attrs.class.includes("total") ? "double-height" : null),
+          bold: attrs.bold === "on" || isBold,
+        };
+      } else if (tag === "left" && currentLine) {
+        currentSection = "left";
+      } else if (tag === "right" && currentLine) {
+        currentSection = "right";
+      } else if (tag === "center" && currentLine) {
+        currentSection = "center";
+      } else if (tag === "br") {
+        flushBlockBuffer();
+      } else if (tag === "hr") {
+        flushBlockBuffer();
+        printer.alignLeft();
+        printer.println("-".repeat(receiptWidth));
+        setPrinterAlign(printer, currentAlign);
+      } else if (tag === "cut") {
+        printer.cut();
+      } else if (tag === "cashdraw") {
+        printer.openCashDrawer();
+      }
+    };
+
+    parser.ontext = (text) => {
+      if (!text) return;
+
+      if (currentLine) {
+        if (currentSection === "left") {
+          currentLine.left += text;
+        } else if (currentSection === "right") {
+          currentLine.right += text;
+        } else if (currentSection === "center") {
+          currentLine.center += text;
+        } else {
+          currentLine.left += text;
+        }
+      } else {
+        blockBuffer += text;
+      }
+    };
+
+    parser.onclosetag = (tagName) => {
+      tagStack.pop();
+
+      if (tagName === "line") {
+        if (currentLine) {
+          const isDoubleWidth = currentLine.size === "double" || currentLine.size === "double-width";
+          const isDblHeight = currentLine.size === "double-height" || currentLine.size === "double";
+          const effectiveWidth = isDoubleWidth ? Math.floor(receiptWidth / 2) : receiptWidth;
+
+          if (isDoubleWidth) {
+            printer.setTextDoubleWidth();
+          }
+          if (isDblHeight) {
+            printer.setTextDoubleHeight();
+          }
+          if (currentLine.bold) {
+            printer.bold(true);
+          }
+
+          const left = currentLine.left.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+          const right = currentLine.right.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+          const center = currentLine.center.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+          const indentStr = currentLine.indent > 0 ? "  ".repeat(currentLine.indent) : "";
+
+          // Sesuai PosBox Odoo: tag <line> selalu dicetak mulai dari margin 0 (alignLeft)
+          // agar nama produk, baris jumlah x harga, dan total sejajar simetris dari tepi kiri ke kanan
+          printer.alignLeft();
+
+          if (left && right) {
+            const adjustedLeft = indentStr + left;
+            if (adjustedLeft.length + right.length + 1 <= effectiveWidth) {
+              const spaces = effectiveWidth - adjustedLeft.length - right.length;
+              printer.println(adjustedLeft + " ".repeat(spaces) + right);
+            } else {
+              const maxLeft = effectiveWidth - right.length - 1;
+              if (maxLeft >= 6) {
+                printer.println(adjustedLeft.substring(0, maxLeft) + " " + right);
+              } else {
+                printer.println(adjustedLeft);
+                printer.println(right.padStart(effectiveWidth, " "));
+              }
+            }
+          } else if (left) {
+            printer.println(indentStr + left);
+          } else if (right) {
+            printer.println(right.padStart(effectiveWidth, " "));
+          } else if (center) {
+            printer.alignCenter();
+            printer.println(center);
+          }
+
+          if (currentLine.size || isDoubleHeight) {
+            printer.setTextNormal();
+            isDoubleHeight = false;
+          }
+          if (currentLine.bold && !isBold) {
+            printer.bold(false);
+          }
+
+          setPrinterAlign(printer, currentAlign);
+          currentLine = null;
+          currentSection = null;
+        }
+      } else if (tagName === "left" || tagName === "right" || tagName === "center") {
+        currentSection = null;
+      } else if (tagName === "b" || tagName === "strong" || tagName.match(/^h[1-5]$/)) {
+        printer.bold(false);
+        isBold = false;
+        printer.setTextNormal();
+      } else if (tagName === "pre" || tagName === "div" || tagName === "p") {
+        flushBlockBuffer();
+        if (isDoubleHeight) {
+          printer.setTextNormal();
+          isDoubleHeight = false;
+        }
+        setPrinterAlign(printer, currentAlign);
+      } else if (tagName === "receipt") {
+        flushBlockBuffer();
+        printer.cut();
+      }
+    };
+
+    parser.onend = () => {
+      resolve();
+    };
+
+    parser.write(cleanXml).close();
+  });
+}
+
+function setPrinterAlign(printer, align) {
+  if (align === "center") {
+    printer.alignCenter();
+  } else if (align === "right") {
+    printer.alignRight();
+  } else {
+    printer.alignLeft();
+  }
+}
+
+function printLeftRight(printer, leftText, rightText, width = 48) {
+  const left = String(leftText || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  const right = String(rightText || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  printer.alignLeft();
+  if (left.length + right.length + 1 <= width) {
+    const spaces = width - left.length - right.length;
+    printer.println(left + " ".repeat(spaces) + right);
+  } else {
+    const maxLeft = width - right.length - 1;
+    if (maxLeft >= 6) {
+      printer.println(left.substring(0, maxLeft) + " " + right);
+    } else {
+      printer.println(left);
+      printer.println(right.padStart(width, " "));
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// 4. ENDPOINTS
+// ---------------------------------------------------------------------------
+
+// A. DOT MATRIX PRINT (Dipanggil dari Odoo 10 dotmatrix & pos_picking_note print.js)
+// URL: POST http://localhost:8000/dotmatrix/print
+// Body: { printer_data: "<template teks 136 kolom>" }
+app.post("/dotmatrix/print", async (req, res) => {
+  const printerData = req.body.printer_data || req.body.text || req.body.data || (typeof req.body === "string" ? req.body : null);
+  const printerName = req.body.printer || "dotmatrix";
+
+  if (!printerData) {
+    return res.status(400).json({ status: "ERROR", error: "Field 'printer_data' tidak boleh kosong" });
+  }
+
+  try {
+    await printRawData({ printerName, connection: req.body.connection, data: printerData });
+    console.log(`[DotMatrix] Berhasil mencetak ke printer: ${printerName}`);
+    res.json({ status: "OK", success: true });
+  } catch (err) {
+    console.error("[DotMatrix] Gagal cetak:", err.message);
+    res.status(500).json({ status: "ERROR", error: err.message });
+  }
+});
+
+// B. ODOO POSBOX EMULATOR ENDPOINTS (Dipanggil oleh Odoo POS standar / ProxyDevice)
+// Status POSBox (cek koneksi printer dari layar POS Odoo)
+app.all("/hw_proxy/status_json", (req, res) => {
+  const id = (req.body && req.body.id) || 1;
+  res.json({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      status: "connected",
+      drivers: {
+        escpos: { status: "connected", messages: [] },
+      },
+    },
+  });
+});
+
+app.all("/hw_proxy/hello", (req, res) => {
+  res.send("ping");
+});
+
+app.all("/hw_proxy/handshake", (req, res) => {
+  const id = (req.body && req.body.id) || 1;
+  res.json({ jsonrpc: "2.0", id, result: true });
+});
+
+// Buka laci kasir (Open cashbox)
+app.post("/hw_proxy/open_cashbox", async (req, res) => {
+  const id = (req.body && req.body.id) || 1;
+  try {
+    const printer = buildPrinter({ printerName: config.defaultPrinter });
+    printer.openCashDrawer();
+    await printer.execute();
+    res.json({ jsonrpc: "2.0", id, result: true });
+  } catch (err) {
+    res.status(500).json({ jsonrpc: "2.0", id, error: { message: err.message } });
+  }
+});
+
+// Cetak struk POS Odoo bawaan (XML Receipt)
+app.post(["/hw_proxy/print_xml_receipt", "/hw_proxy/print_receipt"], async (req, res) => {
+  const id = (req.body && req.body.id) || 1;
+  const receiptXml = (req.body && req.body.params && req.body.params.receipt) ||
+                     (req.body && req.body.receipt) ||
+                     (typeof req.body === "string" ? req.body : null);
+
+  if (!receiptXml) {
+    return res.status(400).json({ jsonrpc: "2.0", id, error: { message: "Receipt XML data is missing" } });
+  }
+
+  try {
+    const printer = buildPrinter({ printerName: config.defaultPrinter });
+    await renderXmlReceipt(printer, receiptXml);
+    await printer.execute();
+    console.log("[POSBox] Berhasil mencetak XML receipt dari Odoo");
+    res.json({ jsonrpc: "2.0", id, result: true });
+  } catch (err) {
+    console.error("[POSBox] Gagal mencetak XML receipt:", err.message);
+    res.status(500).json({ jsonrpc: "2.0", id, error: { message: err.message } });
+  }
+});
+
+// C. PRINT RECEIPT (Dipanggil oleh tax_transaction / custom request)
+// Otomatis mendeteksi apakah request berisi XML Odoo, data teks mentah, atau JSON order
+app.post("/print/receipt", async (req, res) => {
+  // 1. Jika berupa XML Receipt Odoo (<receipt>...</receipt>)
+  let receiptXml = null;
+  if (typeof req.body === "string" && req.body.includes("<receipt")) {
+    receiptXml = req.body;
+  } else if (req.body && req.body.receipt && typeof req.body.receipt === "string" && req.body.receipt.includes("<receipt")) {
+    receiptXml = req.body.receipt;
+  } else if (req.body && req.body.params && req.body.params.receipt) {
+    receiptXml = req.body.params.receipt;
+  }
+
+  if (receiptXml) {
+    try {
+      const printer = buildPrinter({ printerName: req.body.printer, connection: req.body.connection });
+      await renderXmlReceipt(printer, receiptXml);
+      await printer.execute();
+      console.log("[Receipt] Berhasil mencetak XML receipt Odoo");
+      return res.json({ success: true });
+    } catch (err) {
+      console.error("[Receipt] Gagal mencetak XML receipt:", err.message);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  // 2. Jika berupa Raw Text / Dot Matrix printer data
+  if (req.body && (req.body.printer_data || req.body.raw)) {
+    const data = req.body.printer_data || req.body.raw;
+    try {
+      await printRawData({ printerName: req.body.printer, connection: req.body.connection, data });
+      return res.json({ success: true, status: "OK" });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  // 3. Jika berupa JSON items (dari modul POS kustom) -> cetak dinamis TANPA data toko hardcoded
+  const {
+    printer: printerName, connection, storeName, orderRef, items, total, footer,
+    cashier, clientName, date, subtotal, taxDetails, totalDiscount,
+    paymentLines, change, totalSavings, pickingAddress
+  } = req.body || {};
+
+  if (Array.isArray(items) && items.length > 0) {
+    try {
+      const printer = buildPrinter({ printerName, connection });
+      const receiptWidth = config.charsPerLine || 48;
+
+      printer.alignCenter();
+      if (storeName) {
+        printer.setTextDoubleHeight();
+        printer.println(storeName);
+        printer.setTextNormal();
+      }
+      if (cashier) printer.println(`Kasir: ${cashier}`);
+      if (clientName) printer.println(`Pelanggan: ${clientName}`);
+      if (date) printer.println(date);
+      if (orderRef) printer.println(orderRef);
+      printer.println("-".repeat(receiptWidth));
+
+      printer.alignLeft();
+      items.forEach((item) => {
+        const qty = item.qty ?? 1;
+        const price = item.price ?? 0;
+        const discount = item.discount ?? 0;
+        const unitName = item.unit_name || "Unit(s)";
+        const priceDisplay = item.price_display ?? (qty * price);
+        const simple = (discount === 0 && unitName === "Unit(s)" && qty === 1);
+
+        if (simple) {
+          printLeftRight(printer, item.name, formatRupiah(priceDisplay), receiptWidth);
+        } else {
+          printer.println(item.name);
+          if (discount !== 0) printer.println(`  Discount: ${discount}%`);
+          let qtyStr = `${qty}`;
+          if (unitName !== "Unit(s)") qtyStr += ` ${unitName}`;
+          printLeftRight(printer, `  ${qtyStr} x ${formatRupiah(price)}`, formatRupiah(priceDisplay), receiptWidth);
+        }
+      });
+
+      if (totalDiscount) {
+        printLeftRight(printer, "Tot. Diskon", `= ${formatRupiah(totalDiscount)}`, receiptWidth);
+      }
+
+      const isTaxIncluded = Math.abs((subtotal || 0) - (total || 0)) <= 0.000001;
+      if (!isTaxIncluded && subtotal) {
+        printer.alignRight();
+        printer.println("--------");
+        printLeftRight(printer, "Subtotal", formatRupiah(subtotal), receiptWidth);
+        if (taxDetails && taxDetails.length > 0) {
+          taxDetails.forEach(tax => {
+            printLeftRight(printer, tax.name, formatRupiah(tax.amount), receiptWidth);
+          });
+        }
+      }
+
+      printer.alignRight();
+      printer.println("--------");
+      printer.setTextDoubleHeight();
+      printLeftRight(printer, "TOTAL", formatRupiah(total), receiptWidth);
+      printer.setTextNormal();
+
+      if (paymentLines && paymentLines.length > 0) {
+        paymentLines.forEach(payment => {
+          printLeftRight(printer, payment.name, formatRupiah(payment.amount), receiptWidth);
+        });
+      }
+
+      if (change !== undefined) {
+        printer.setTextDoubleHeight();
+        printLeftRight(printer, "KEMBALIAN", formatRupiah(change), receiptWidth);
+        printer.setTextNormal();
+      }
+
+      if (totalSavings) {
+        printLeftRight(printer, "ANDA HEMAT", formatRupiah(totalSavings), receiptWidth);
+      }
+
+      if (footer) {
+        printer.println("");
+        printer.alignCenter();
+        printer.println(footer);
+      }
+
+      printer.cut();
+      await printer.execute();
+      console.log("[Receipt] Berhasil mencetak transaksi JSON (tax_transaction)");
+      return res.json({ success: true });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+
+  return res.status(400).json({ error: "Payload tidak valid (kirim 'receipt' XML, 'printer_data', atau 'items' JSON)" });
+});
+
+// D. PRINT RAW (Langsung kirim teks/byte mentah ke printer tanpa pemrosesan)
+app.post("/print/raw", async (req, res) => {
+  const data = req.body.data || req.body.text || req.body.printer_data || (typeof req.body === "string" ? req.body : null);
+  const { printer: printerName, connection } = req.body || {};
+
+  if (!data) return res.status(400).json({ error: "field 'data' wajib diisi" });
+
+  try {
+    await printRawData({ printerName, connection, data });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// E. PRINT TEXT (Teks polos via thermal printer)
+app.post("/print/text", async (req, res) => {
+  const { printer: printerName, connection, text } = req.body || {};
+  if (!text) return res.status(400).json({ error: "field 'text' wajib diisi" });
+
+  try {
+    const printer = buildPrinter({ printerName, connection });
+    printer.alignCenter();
+    printer.println(text);
+    printer.cut();
+    await printer.execute();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// F. DAFTAR & STATUS PRINTER
+app.get("/printers", (req, res) => {
+  const list = Object.entries(config.printers).map(([name, p]) => ({
+    name,
+    mode: p.mode,
+    target: p.target,
+    isDefault: name === config.defaultPrinter,
+  }));
+  res.json({ printers: list });
+});
+
+app.get("/status", async (req, res) => {
+  try {
+    const printer = buildPrinter({ printerName: req.query.printer });
+    const connected = await printer.isPrinterConnected();
+    res.json({ connected });
+  } catch (err) {
+    res.status(500).json({ connected: false, error: err.message });
+  }
+});
+
+function formatRupiah(num) {
+  return "Rp" + Number(num).toLocaleString("id-ID");
+}
+
+app.listen(config.serverPort, () => {
+  console.log(`Print proxy jalan di http://localhost:${config.serverPort}`);
+  console.log(`Printer terdaftar: ${Object.keys(config.printers).join(", ")}`);
+  console.log(`Default Printer: ${config.defaultPrinter}`);
+});
