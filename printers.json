@@ -1,6 +1,19 @@
 {
   "serverPort": 8000,
-  "defaultPrinter": "",
+  "defaultPrinter": "kasir1",
   "charsPerLine": 33,
-  "printers": {}
+  "printers": {
+    "dotmatrix": {
+      "mode": "usb",
+      "target": "/dev/usb/lp0",
+      "port": 8000,
+      "type": "epson"
+    },
+    "kasir1": {
+      "mode": "usb",
+      "target": "/dev/usb/lp0",
+      "port": 8001,
+      "type": "epson"
+    }
+  }
 }

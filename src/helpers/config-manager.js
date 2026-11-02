@@ -107,8 +107,10 @@ function startPortListener(port) {
 
   if (expressAppInstance) {
     try {
-      const server = expressAppInstance.listen(p, () => {
-        console.log(`[Multi-Kasir] Port ${p} aktif dan siap menerima request Odoo.`);
+      const { createDualServer } = require("./dual-server");
+      const server = createDualServer(expressAppInstance);
+      server.listen(p, () => {
+        console.log(`[Multi-Kasir] Port ${p} aktif (HTTP & HTTPS) dan siap menerima request Odoo.`);
       });
       server.on("error", (err) => {
         console.error(`[Multi-Kasir] Error pada port ${p}:`, err.message);

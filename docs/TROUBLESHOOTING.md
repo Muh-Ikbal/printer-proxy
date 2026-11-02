@@ -79,12 +79,23 @@ Ada proses Node.js lama atau web server lain yang sedang mendengarkan di port ya
    ```
    Atau di Windows Defender Firewall, tambahkan Inbound Rule untuk mengizinkan port TCP 8000–8010.
 
-3. **Masalah Mixed Content (Odoo HTTPS vs Proxy HTTP):**
-   Jika server Odoo Anda diakses menggunakan **`https://`**, browser modern akan memblokir request ke proxy lokal yang menggunakan **`http://`** (*Blocked Mixed Content*).
-   
-   **Solusi:**
-   - Akses Odoo via `http://` jika berada di jaringan lokal kasir.
-   - Atau atur browser kasir: buka `chrome://flags` $\rightarrow$ cari *"Insecure origins treated as secure"* $\rightarrow$ masukkan IP Proxy Anda (`http://192.168.1.50:8001`).
+3. **Masalah HTTPS Odoo Production ("HTTPS connection to IoT Box failed"):**
+   Jika server Odoo Anda diakses menggunakan **`https://`**, Odoo POS secara otomatis akan memaksa koneksi ke IoT Box / Print Proxy melalui protokol **`https://`** (misal `https://192.168.1.32:8001`).
+
+   **Fitur Dual HTTP & HTTPS:**
+   Print Proxy kini sudah dilengkapi dengan dukungan protokol ganda (HTTP & HTTPS) otomatis di semua port kasir.
+
+   **Cara Mengatasinya (Hanya 1x per Browser Kasir):**
+   1. Buka tab baru di browser kasir (Firefox / Chrome).
+   2. Navigasikan ke URL proxy kasir Anda via HTTPS, contoh:
+      ```
+      https://192.168.1.32:8001
+      ```
+   3. Browser akan menampilkan peringatan keamanan sertifikat (*Self-Signed*):
+      - **Di Firefox:** Klik tombol **Advanced...** $\rightarrow$ klik **Accept the Risk and Continue**.
+      - **Di Chrome / Edge:** Klik **Advanced** $\rightarrow$ klik **Proceed to 192.168.1.32 (unsafe)**.
+   4. Setelah tab terbuka dan menampilkan pesan status, kembali ke tab Odoo POS dan klik **Ok** / refresh POS.
+   5. Indikator printer IoT Box akan langsung terhubung hijau!
 
 ---
 
