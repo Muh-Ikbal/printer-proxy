@@ -33,6 +33,9 @@ function buildPrinter({ printerName, connection } = {}) {
     target = resolveTarget(connection.target);
   } else {
     const name = printerName || all.defaultPrinter || config.defaultPrinter;
+    if (!name) {
+      throw new Error("Belum ada printer terdaftar. Silakan tambahkan printer melalui dashboard UI terlebih dahulu.");
+    }
     const profile = (all.printers && all.printers[name]) || (config.printers && config.printers[name]);
     if (!profile) {
       throw new Error(`Printer profile '${name}' tidak ditemukan di konfigurasi`);

@@ -1,38 +1,6 @@
 {
   "serverPort": 8000,
-  "defaultPrinter": "kasir1",
+  "defaultPrinter": "",
   "charsPerLine": 33,
-  "printers": {
-    "kasir1": {
-      "port": 8001,
-      "mode": "usb",
-      "target": "/dev/usb/lp0"
-    },
-    "kasir2": {
-      "port": 8002,
-      "mode": "usb",
-      "target": "/dev/usb/lp1"
-    },
-    "kasirBluetooth": {
-      "mode": "bluetooth",
-      "target": "/dev/rfcomm0"
-    },
-    "dapurLan": {
-      "mode": "lan",
-      "target": {
-        "address": "192.168.1.100",
-        "port": 9100
-      }
-    },
-    "dotmatrix": {
-      "mode": "usb",
-      "target": "/dev/usb/lp1"
-    },
-    "Kasir Depan": {
-      "mode": "usb",
-      "target": "/dev/usb/lp01",
-      "port": 8003,
-      "type": "epson"
-    }
-  }
+  "printers": {}
 }

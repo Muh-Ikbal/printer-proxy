@@ -55,10 +55,10 @@ function loadData() {
     }
   }
 
-  // Jika belum ada file printers.json, buat dari konfigurasi awal
+  // Jika belum ada file printers.json, buat kosong — user tambahkan printer lewat dashboard
   const initial = {
     serverPort: baseConfig.serverPort || 8000,
-    defaultPrinter: baseConfig.defaultPrinter || "kasir1",
+    defaultPrinter: baseConfig.defaultPrinter || "",
     charsPerLine: baseConfig.charsPerLine || 33,
     printers: baseConfig.printers || {},
   };
