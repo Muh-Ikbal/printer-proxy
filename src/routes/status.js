@@ -4,13 +4,20 @@
 const express = require("express");
 const config = require("../../config");
 const { buildPrinter } = require("../helpers/printer-builder");
+const { printRawData } = require("../helpers/raw-printer");
 const {
   detectUsbPrinters,
   detectLanPrinters,
   detectAllPrinters,
 } = require("../helpers/auto-detect");
+const { exec } = require("child_process");
 
 const router = express.Router();
+
+// Favicon handler agar tidak memicu 404 di browser console
+router.get("/favicon.ico", (req, res) => {
+  res.status(204).end();
+});
 
 function resolveTarget(target) {
   if (target && typeof target === "object" && !target.address) {
@@ -129,12 +136,63 @@ router.get("/status", async (req, res) => {
   }
 });
 
-// POST /printers/test — test cetak struk dari dashboard
+// POST /printers/test — test cetak struk dari dashboard (mendukung thermal, dot matrix, dan printer biasa)
 router.post("/printers/test", async (req, res) => {
   const { printer: printerName } = req.body || {};
+  const all = getAllPrinters();
+  const pName = printerName || all.defaultPrinter || config.defaultPrinter;
+  const profile = (all.printers && all.printers[pName]) || (config.printers && config.printers[pName]) || {};
+  const mode = (profile.mode || "").toLowerCase();
+  const type = (profile.type || "").toLowerCase();
+
+  const isDotMatrixOrStandard =
+    (pName && pName.toLowerCase().includes("dotmatrix")) ||
+    type.includes("dot") ||
+    type.includes("matrix") ||
+    mode === "standard" ||
+    mode === "gdi" ||
+    mode === "printer";
+
   try {
+    if (isDotMatrixOrStandard) {
+      // Format teks monospace untuk Dot Matrix (ESC/P) dan Printer Biasa (GDI/Out-Printer)
+      // Tanpa kode thermal cutter (printer.cut) agar printer biasa / dotmatrix tidak membuang job
+      const dateStr = new Date().toLocaleString("id-ID");
+      const testContent = [
+        "============================================================",
+        "                  PRINT PROXY - TEST PRINT                  ",
+        "============================================================",
+        `Printer   : ${pName}`,
+        `Target    : ${profile.target || "-"}`,
+        `Tipe/Mode : ${(profile.mode || "standard").toUpperCase()}`,
+        `Waktu     : ${dateStr}`,
+        `OS        : ${process.platform.toUpperCase()}`,
+        "------------------------------------------------------------",
+        "Status    : BERHASIL TERHUBUNG & SIAP MENCETAK",
+        "Engine    : Dual-Mode (Dot Matrix ESC/P & Printer Biasa GDI)",
+        "------------------------------------------------------------",
+        "Tes Huruf & Angka:",
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+        "abcdefghijklmnopqrstuvwxyz",
+        "0123456789 - !@#$%^&*()_+ []:;,.",
+        "============================================================",
+        "\r\n\r\n\r\n\x0C", // Line feeds dan Form Feed (eject)
+      ].join("\r\n");
+
+      await printRawData({
+        printerName: pName,
+        data: testContent,
+        mode: (mode === "standard" || mode === "gdi") ? "text" : "auto",
+      });
+
+      return res.json({
+        success: true,
+        message: `Test print teks berhasil dikirim ke '${pName}' (Mode Dotmatrix / Printer Biasa)`,
+      });
+    }
+
+    // Printer Thermal Kasir Standar (ESC/POS)
     const printer = buildPrinter({ printerName });
-    const pName = printerName || config.defaultPrinter;
     printer.alignCenter();
     printer.setTextDoubleHeight();
     printer.println("PRINT PROXY TEST");
@@ -146,16 +204,33 @@ router.post("/printers/test", async (req, res) => {
     printer.println("--------------------------------");
     printer.alignLeft();
     printer.println("Status : BERHASIL TERHUBUNG");
-    printer.println("Bridge : Odoo POS & Dot Matrix");
+    printer.println("Bridge : Odoo POS & Thermal Receipt");
     printer.println("--------------------------------");
     printer.alignCenter();
     printer.println("Siap mencetak transaksi!");
     printer.println("");
     printer.cut();
     await printer.execute();
-    res.json({ success: true, message: `Test print berhasil dikirim ke '${pName}'` });
+    res.json({ success: true, message: `Test print thermal berhasil dikirim ke '${pName}'` });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /printers/clear-queue — batalkan/hapus antrean job yang macet di OS
+router.post("/printers/clear-queue", (req, res) => {
+  const isWindows = process.platform === "win32";
+  if (isWindows) {
+    exec("powershell -NoProfile -Command \"Get-PrintJob | Remove-PrintJob -ErrorAction SilentlyContinue\"", (err) => {
+      if (err) {
+        return res.status(500).json({ success: false, error: "Gagal membersihkan antrean Windows: " + err.message });
+      }
+      res.json({ success: true, message: "Antrean print spooler Windows berhasil dibersihkan" });
+    });
+  } else {
+    exec("cancel -a 2>/dev/null || true", () => {
+      res.json({ success: true, message: "Antrean cetak Linux berhasil dibersihkan" });
+    });
   }
 });
 

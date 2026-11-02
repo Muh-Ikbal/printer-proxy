@@ -1,7 +1,8 @@
 // src/helpers/windows-spooler.js
-// Jembatan langsung ke antrian Windows Print Spooler (winspool.drv)
-// Menggunakan Win32 API native (OpenPrinter, StartDocPrinter, WritePrinter)
-// Bekerja untuk Dot Matrix (ESC/P) maupun Thermal Receipt (ESC/POS) tanpa perlu share printer.
+// Jembatan ke antrian Windows Print Spooler (winspool.drv) & Text Engine (Out-Printer)
+// Mendukung Dual-Mode:
+// 1. RAW Mode (Win32 API WritePrinter): Untuk Real Dot Matrix (ESC/P) & Thermal (ESC/POS)
+// 2. Text Mode (GDI / Out-Printer): Untuk Printer Biasa (Inkjet, Laser, Canon, Epson L-Series, PDF)
 
 const fs = require("fs");
 const path = require("path");
@@ -25,11 +26,11 @@ function cleanPrinterName(rawName) {
 }
 
 /**
- * Kirim buffer/data mentah ke printer Windows melalui Windows Print Spooler.
- * @param {{ printerName: string, data: string|Buffer, docName?: string }} opts
+ * Kirim buffer/data teks atau mentah ke printer Windows melalui Windows Print Spooler atau Text Engine.
+ * @param {{ printerName: string, data: string|Buffer, mode?: "auto"|"raw"|"text", docName?: string }} opts
  * @returns {Promise<void>}
  */
-function printRawWindows({ printerName, data, docName = "RAW_PRINT_JOB" }) {
+function printRawWindows({ printerName, data, mode = "auto", docName = "PRINT_JOB" }) {
   return new Promise((resolve, reject) => {
     if (process.platform !== "win32") {
       return reject(new Error("windows-spooler hanya dapat berjalan di sistem operasi Windows"));
@@ -65,6 +66,8 @@ function printRawWindows({ printerName, data, docName = "RAW_PRINT_JOB" }) {
       cleanName,
       "-FilePath",
       tempFile,
+      "-Mode",
+      mode || "auto",
     ];
 
     execFile("powershell", psArgs, { timeout: 15000 }, (err, stdout, stderr) => {
@@ -101,12 +104,11 @@ class WindowsSpoolerInterface {
   }
 
   async isPrinterConnected() {
-    // Di Windows, jika printer terdaftar di sistem, spooler akan menerima antrian job
     return true;
   }
 
   async execute(buffer) {
-    return printRawWindows({ printerName: this.printerName, data: buffer });
+    return printRawWindows({ printerName: this.printerName, data: buffer, mode: "raw" });
   }
 }
 

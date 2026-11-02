@@ -11,10 +11,10 @@ async function bootstrap() {
   // Pastikan sertifikat SSL siap (dibuat otomatis jika belum ada)
   await ensureCertificate();
 
-  // 1. Port utama (Web Dashboard & Default Printer) — melayani HTTP dan HTTPS
+  // 1. Port utama (Web Dashboard & Default Printer) — melayani HTTP dan HTTPS di semua network interface (0.0.0.0)
   const mainServer = createDualServer(app);
 
-  mainServer.listen(config.serverPort, () => {
+  mainServer.listen(config.serverPort, "0.0.0.0", () => {
     const data = getAllPrinters();
     const printerNames = Object.keys(data.printers);
 

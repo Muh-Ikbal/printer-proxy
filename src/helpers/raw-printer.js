@@ -23,9 +23,10 @@ function resolveTarget(target) {
 /**
  * Eksekusi fisik pengiriman data mentah (dipanggil melalui antrean sequential).
  */
-function doPrintRawData({ printerName, connection, data }) {
+function doPrintRawData(opts) {
+  const { printerName, connection, data, mode: printModeOverride } = opts;
   return new Promise((resolve, reject) => {
-    let mode, target;
+    let mode, target, profile;
     const dynamicConfig = getAllPrinters();
     const allPrinters = { ...config.printers, ...(dynamicConfig.printers || {}) };
 
@@ -34,7 +35,7 @@ function doPrintRawData({ printerName, connection, data }) {
       target = resolveTarget(connection.target);
     } else {
       const name = printerName || (allPrinters.dotmatrix ? "dotmatrix" : (dynamicConfig.defaultPrinter || config.defaultPrinter));
-      const profile = allPrinters[name];
+      profile = allPrinters[name];
       if (!profile) {
         return reject(new Error(`Printer profile '${name}' tidak ditemukan di konfigurasi`));
       }
@@ -73,17 +74,20 @@ function doPrintRawData({ printerName, connection, data }) {
       return;
     }
 
-    // 2. SISTEM OPERASI WINDOWS (Native Spooler / Win32 API)
+    // 2. SISTEM OPERASI WINDOWS (Native Spooler / Win32 API & Text Engine)
     if (isWindows) {
       let winPrinterName = String(target || "");
       if (winPrinterName.startsWith("/dev/") || !winPrinterName) {
         winPrinterName = (printerName && printerName !== "dotmatrix") ? printerName : "EPSON LQ-310 ESC/P2";
-        logger.warn("RawPrinter", `Target Windows tidak valid ('${target}'), otomatis diarahkan ke: '${winPrinterName}'`);
+        logger.warn("RawPrinter", `Target Windows tidak valid ('${target}'), diarahkan ke: '${winPrinterName}'`);
       }
 
-      printRawWindows({ printerName: winPrinterName, data })
+      // Tentukan mode: jika opsi eksplisit diberikan pakai itu, jika mode standard/gdi gunakan text, selainnya auto
+      const winMode = printModeOverride || (profile && (profile.mode === "standard" || profile.mode === "gdi") ? "text" : "auto");
+
+      printRawWindows({ printerName: winPrinterName, data, mode: winMode })
         .then(() => {
-          logger.info("RawPrinter", `Berhasil mengirim job ke Windows Spooler '${winPrinterName}'`);
+          logger.info("RawPrinter", `Berhasil mengirim job ke Windows Spooler '${winPrinterName}' [mode: ${winMode}]`);
           resolve();
         })
         .catch((err) => {
@@ -103,7 +107,7 @@ function doPrintRawData({ printerName, connection, data }) {
         logger.info("RawPrinter", `Berhasil menulis ke device file '${target}'`);
         resolve();
       });
-    } else if (mode === "cups" || mode === "printer") {
+    } else if (mode === "cups" || mode === "printer" || mode === "standard") {
       const child = exec(`lpr -P "${target}" -o raw`, (err, stdout, stderr) => {
         if (err) {
           const errMsg = stderr || err.message;
@@ -125,7 +129,7 @@ function doPrintRawData({ printerName, connection, data }) {
 
 /**
  * Cetak data mentah ke printer (dot matrix, ESC/P, dll) melalui antrean sequential.
- * @param {{ printerName?: string, connection?: object, data: string|Buffer }} opts
+ * @param {{ printerName?: string, connection?: object, data: string|Buffer, mode?: string }} opts
  * @returns {Promise<void>}
  */
 function printRawData(opts) {

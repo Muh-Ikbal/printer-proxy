@@ -43,6 +43,51 @@ async function runEndpointTests() {
     assert.strictEqual(jsonHw.result.status, "connected");
     console.log("  ✔ Uji POST /hw_proxy/status_json emulator Odoo lulus");
 
+    // 5. Uji CORS Preflight (OPTIONS) dengan header x-debug-mode & Private Network Access (PNA)
+    const resCors = await fetch("http://localhost:9999/hw_proxy/handshake", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://karyajayasantosa.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type, x-debug-mode",
+        "Access-Control-Request-Private-Network": "true",
+      },
+    });
+    assert.strictEqual(resCors.status, 200);
+    assert.strictEqual(resCors.headers.get("access-control-allow-origin"), "https://karyajayasantosa.com");
+    assert.strictEqual(resCors.headers.get("access-control-allow-private-network"), "true");
+    assert.strictEqual(resCors.headers.get("access-control-allow-credentials"), "true");
+    assert.strictEqual(resCors.headers.get("access-control-allow-headers"), "content-type, x-debug-mode");
+    console.log("  ✔ Uji CORS Preflight & x-debug-mode lulus (Status: 200 OK)");
+
+    // 5b. Uji GET/POST /hw_proxy/handshake
+    const resHandshake = await fetch("http://localhost:9999/hw_proxy/handshake?session_id=12345");
+    const jsonHandshake = await resHandshake.json();
+    assert.strictEqual(jsonHandshake.result, true);
+    console.log("  ✔ Uji /hw_proxy/handshake lulus (result: true)");
+
+    // 6. Uji Favicon 204 (tanpa 404)
+    const resFav = await fetch("http://localhost:9999/favicon.ico");
+    assert.strictEqual(resFav.status, 204);
+    console.log("  ✔ Uji GET /favicon.ico lulus (Status: 204 No Content)");
+
+    // 7. Uji Unduh Sertifikat SSL /server.crt
+    const resCert = await fetch("http://localhost:9999/server.crt");
+    assert.strictEqual(resCert.status, 200);
+    console.log("  ✔ Uji GET /server.crt lulus (Status: 200 OK)");
+
+    // 8. Uji Endpoint Odoo Modern /hw_drivers/check_certificate
+    const resHwDrv = await fetch("http://localhost:9999/hw_drivers/check_certificate");
+    const jsonHwDrv = await resHwDrv.json();
+    assert.strictEqual(jsonHwDrv.status, "ok");
+    console.log("  ✔ Uji GET /hw_drivers/check_certificate lulus (Status: ok)");
+
+    // 9. Uji POST /printers/clear-queue
+    const resClr = await fetch("http://localhost:9999/printers/clear-queue", { method: "POST" });
+    const jsonClr = await resClr.json();
+    assert.strictEqual(jsonClr.success, true);
+    console.log("  ✔ Uji POST /printers/clear-queue lulus");
+
     console.log("✅ Semua pengujian Endpoint BERHASIL!\n");
   } finally {
     server.close();

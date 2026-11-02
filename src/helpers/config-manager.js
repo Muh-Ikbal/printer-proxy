@@ -41,6 +41,10 @@ function loadData() {
               p.target = "EPSON LQ-310 ESC/P2";
               p.mode = "printer";
               modified = true;
+            } else {
+              p.target = "POS-80";
+              p.mode = "printer";
+              modified = true;
             }
           }
         });
@@ -109,8 +113,8 @@ function startPortListener(port) {
     try {
       const { createDualServer } = require("./dual-server");
       const server = createDualServer(expressAppInstance);
-      server.listen(p, () => {
-        console.log(`[Multi-Kasir] Port ${p} aktif (HTTP & HTTPS) dan siap menerima request Odoo.`);
+      server.listen(p, "0.0.0.0", () => {
+        console.log(`[Multi-Kasir] Port ${p} aktif di 0.0.0.0 (HTTP & HTTPS) dan siap menerima request Odoo.`);
       });
       server.on("error", (err) => {
         console.error(`[Multi-Kasir] Error pada port ${p}:`, err.message);

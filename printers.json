@@ -3,16 +3,10 @@
   "defaultPrinter": "kasir1",
   "charsPerLine": 33,
   "printers": {
-    "dotmatrix": {
-      "mode": "usb",
-      "target": "/dev/usb/lp0",
-      "port": 8000,
-      "type": "epson"
-    },
     "kasir1": {
       "mode": "usb",
       "target": "/dev/usb/lp0",
-      "port": 8001,
+      "port": 8002,
       "type": "epson"
     }
   }

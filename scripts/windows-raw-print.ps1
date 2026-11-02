@@ -1,14 +1,18 @@
 # scripts/windows-raw-print.ps1
-# Mengirim data mentah (RAW ESC/POS atau ESC/P) langsung ke antrian Windows Print Spooler (winspool.drv).
+# Mengirim data cetak ke Windows Print Spooler (winspool.drv).
+# Mendukung Dual-Mode Engine:
+# 1. RAW Mode (Win32 API WritePrinter): Untuk Real Dot Matrix (Epson LX/LQ) & Thermal Printer (ESC/POS)
+# 2. Text/GDI Mode (Out-Printer): Untuk Printer Biasa (Inkjet, Laser, Canon, Epson L-Series, PDF)
 # Kompatibel dengan Windows 7, 8, 10, 11 (Semua edisi 32-bit & 64-bit).
-# Zero-Dependency: Tidak memerlukan driver C++ tambahan atau software pihak ketiga.
 
 param (
     [Parameter(Mandatory=$true)]
     [string]$PrinterName,
 
     [Parameter(Mandatory=$true)]
-    [string]$FilePath
+    [string]$FilePath,
+
+    [string]$Mode = "auto" # "auto", "raw", "text"
 )
 
 if (-not (Test-Path -LiteralPath $FilePath)) {
@@ -16,6 +20,45 @@ if (-not (Test-Path -LiteralPath $FilePath)) {
     exit 2
 }
 
+# Fungsi cetak via Text Engine Windows (GDI) untuk Printer Biasa
+function Print-ViaTextEngine {
+    param([string]$Prn, [string]$File)
+    try {
+        # Out-Printer merender teks melalui subsistem print Windows (GDI)
+        # Bekerja di semua printer biasa (Canon, Epson L-Series, HP, Brother, PDF, dll)
+        Get-Content -LiteralPath $File -Encoding UTF8 | Out-Printer -Name $Prn
+        Write-Output "OK"
+        exit 0
+    } catch {
+        Write-Error "[TextPrint] Gagal mencetak teks ke '$Prn': $($_.Exception.Message)"
+        exit 1
+    }
+}
+
+# Jika mode eksplisit adalah "text", langsung gunakan Text Engine
+if ($Mode -eq "text") {
+    Print-ViaTextEngine -Prn $PrinterName -File $FilePath
+}
+
+# Jika mode adalah "auto", periksa apakah printer adalah printer dokumen standar (GDI)
+if ($Mode -eq "auto") {
+    try {
+        $pObj = Get-CimInstance Win32_Printer -Filter "Name='$PrinterName'" -ErrorAction SilentlyContinue
+        if ($pObj) {
+            $driver = ($pObj.DriverName + " " + $pObj.Name).ToLower()
+            # Jika driver/nama mengandung indikasi printer biasa / non-ESC/P
+            if ($driver -match "pdf|xps|onenote|canon|deskjet|laserjet|ink|color|series|brother|hp ") {
+                if (-not ($driver -match "pos|esc|thermal|receipt|lx-|lq-|matrix")) {
+                    Print-ViaTextEngine -Prn $PrinterName -File $FilePath
+                }
+            }
+        }
+    } catch {
+        # Abaikan error query WMI
+    }
+}
+
+# Mode RAW: Menggunakan Win32 API native WritePrinter
 $rawPrintCode = @"
 using System;
 using System.IO;
@@ -125,6 +168,16 @@ try {
     Write-Output "OK"
     exit 0
 } catch {
-    Write-Error $_.Exception.Message
-    exit 1
+    # Jika gagal membuka atau menulis RAW di printer biasa, coba fallback ke Text Engine
+    if ($Mode -eq "auto") {
+        try {
+            Print-ViaTextEngine -Prn $PrinterName -File $FilePath
+        } catch {
+            Write-Error $_.Exception.Message
+            exit 1
+        }
+    } else {
+        Write-Error $_.Exception.Message
+        exit 1
+    }
 }

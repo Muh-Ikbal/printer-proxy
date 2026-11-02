@@ -9,6 +9,15 @@ const { getAllPrinters } = require("../helpers/config-manager");
 
 const router = express.Router({ mergeParams: true });
 
+// Anti-cache middleware agar response selalu instan 200 OK (<1ms) dan tidak mengembalikan 304 Not Modified
+router.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  next();
+});
+
 function getRequestedPrinter(req) {
   const dynamicConfig = getAllPrinters();
 
@@ -49,18 +58,30 @@ function getRequestedPrinter(req) {
   return dynamicConfig.defaultPrinter || config.defaultPrinter;
 }
 
-// Status POSBox
-router.all("/status_json", (req, res) => {
+// Status POSBox / IoT Box
+router.all(["/status_json", "/status"], (req, res) => {
   const id = (req.body && req.body.id) || 1;
+  const statusObj = {
+    status: "connected",
+    escpos: { status: "connected", messages: [] },
+    printer: { status: "connected", messages: [] },
+    scanner: { status: "connected", messages: [] },
+    scale: { status: "connected", messages: [] },
+    display: { status: "connected", messages: [] },
+    drivers: {
+      escpos: { status: "connected", messages: [] },
+      printer: { status: "connected", messages: [] },
+      scanner: { status: "connected", messages: [] },
+      scale: { status: "connected", messages: [] },
+      display: { status: "connected", messages: [] },
+    },
+  };
   res.json({
     jsonrpc: "2.0",
     id,
-    result: {
-      status: "connected",
-      drivers: {
-        escpos: { status: "connected", messages: [] },
-      },
-    },
+    result: statusObj,
+    status: "connected",
+    ...statusObj,
   });
 });
 
@@ -71,6 +92,16 @@ router.all("/hello", (req, res) => {
 
 // Handshake
 router.all("/handshake", (req, res) => {
+  const id = (req.body && req.body.id) || 1;
+  res.json({ jsonrpc: "2.0", id, result: true, status: "ok" });
+});
+
+// Dukungan Odoo Modern IoT Box (v16, v17, v18)
+router.all("/check_certificate", (req, res) => {
+  res.json({ status: "ok", valid: true });
+});
+
+router.all("/action", (req, res) => {
   const id = (req.body && req.body.id) || 1;
   res.json({ jsonrpc: "2.0", id, result: true });
 });
@@ -89,8 +120,8 @@ router.post("/open_cashbox", async (req, res) => {
   }
 });
 
-// Cetak struk POS Odoo bawaan (XML Receipt)
-router.post(["/print_xml_receipt", "/print_receipt"], async (req, res) => {
+// Cetak struk POS Odoo bawaan (XML Receipt) & Modul Kustom (Struk KJS, ESC/POS)
+router.post(["/print_xml_receipt", "/print_receipt", "/print_xml", "/print", "/print_escpos"], async (req, res) => {
   const id = (req.body && req.body.id) || 1;
   const receiptXml = (req.body && req.body.params && req.body.params.receipt) ||
                      (req.body && req.body.receipt) ||

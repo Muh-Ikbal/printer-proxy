@@ -799,6 +799,9 @@
           <button class="btn btn-outline btn-sm" id="btnOpenDrawer">
             💵 Test Buka Laci
           </button>
+          <button class="btn btn-danger-outline btn-sm" id="btnClearQueue" title="Batalkan antrean cetak jika spooler macet di Windows">
+            🧹 Bersihkan Antrean Spooler
+          </button>
         </div>
       </div>
 
@@ -828,7 +831,8 @@
             <label>Pilihan Cepat Jenis Printer</label>
             <div class="quick-preset-btns">
               <button type="button" class="quick-preset-btn" onclick="applyPreset('kasir')">🛒 Kasir Thermal</button>
-              <button type="button" class="quick-preset-btn" onclick="applyPreset('dotmatrix')">📄 Dotmatrix</button>
+              <button type="button" class="quick-preset-btn" onclick="applyPreset('dotmatrix')">📄 Dotmatrix Asli</button>
+              <button type="button" class="quick-preset-btn" onclick="applyPreset('standard')">🖨️ Printer Biasa / GDI</button>
               <button type="button" class="quick-preset-btn" onclick="applyPreset('dapur')">🍳 Dapur LAN</button>
             </div>
           </div>
@@ -840,10 +844,11 @@
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
             <div class="form-group">
-              <label for="formPrinterMode">Tipe Koneksi *</label>
+              <label for="formPrinterMode">Tipe Koneksi / Engine *</label>
               <select id="formPrinterMode" required>
-                <option value="usb">USB (Direct /lp*)</option>
-                <option value="printer">Windows Spooler / CUPS</option>
+                <option value="printer">Windows Spooler / CUPS (Auto)</option>
+                <option value="standard">Printer Biasa / GDI (Canon/Epson L/HP/PDF)</option>
+                <option value="usb">USB Direct (Linux /dev/usb/lp*)</option>
                 <option value="lan">LAN Network (IP:Port)</option>
                 <option value="bluetooth">Bluetooth / Serial</option>
               </select>
@@ -859,9 +864,15 @@
           </div>
 
           <div class="form-group">
-            <label for="formPrinterTarget">Target Hardware / Nama di Windows *</label>
-            <input type="text" id="formPrinterTarget" required placeholder="misal: EPSON TM-T82, /dev/usb/lp0, atau 192.168.1.100:9100">
-            <small style="color: var(--text-muted); font-size: 0.73rem;">Di Windows: ketik nama printer persis seperti di Devices & Printers.</small>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label for="formPrinterTarget" style="margin: 0;">Target Hardware / Nama di Windows *</label>
+              <button type="button" class="btn btn-outline btn-sm" id="btnPickWindows" onclick="populateWindowsPrintersList()" style="padding: 2px 8px; font-size: 0.72rem;">
+                🔍 Pilih dari Windows
+              </button>
+            </div>
+            <input type="text" id="formPrinterTarget" required placeholder="misal: EPSON TM-T82, Canon G2000, atau /dev/usb/lp0">
+            <select id="selectDetectedWindowsPrinter" style="display:none; margin-top:6px; font-size: 0.82rem;" onchange="if(this.value){ document.getElementById('formPrinterTarget').value = this.value; }"></select>
+            <small style="color: var(--text-muted); font-size: 0.73rem;">Di Windows: pilih atau ketik nama printer persis seperti di Devices & Printers.</small>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
@@ -1070,12 +1081,40 @@
         nameInput.value = "dotmatrix";
         modeSelect.value = "printer";
         targetInput.placeholder = "misal: EPSON LQ-310 ESC/P2";
+      } else if (type === 'standard') {
+        nameInput.value = "dotmatrix_gdi";
+        modeSelect.value = "standard";
+        targetInput.placeholder = "misal: Canon G2000, EPSON L3210, atau Microsoft Print to PDF";
       } else if (type === 'dapur') {
         nameInput.value = "dapur";
         modeSelect.value = "lan";
         targetInput.placeholder = "192.168.1.100:9100";
       }
     }
+
+    window.populateWindowsPrintersList = async function() {
+      const sel = document.getElementById("selectDetectedWindowsPrinter");
+      sel.innerHTML = "<option value=''>Memindai printer lokal...</option>";
+      sel.style.display = "block";
+      try {
+        const res = await fetch("/printers/detect");
+        const data = await res.json();
+        const list = data.all || [];
+        sel.innerHTML = "<option value=''>-- Pilih printer terdeteksi --</option>";
+        if (list.length === 0) {
+          sel.innerHTML = "<option value=''>Tidak ada printer lokal terdeteksi</option>";
+          return;
+        }
+        list.forEach(item => {
+          const opt = document.createElement("option");
+          opt.value = item.target;
+          opt.textContent = `${item.name} (${item.mode.toUpperCase()})`;
+          sel.appendChild(opt);
+        });
+      } catch (err) {
+        sel.innerHTML = `<option value=''>Gagal deteksi: ${err.message}</option>`;
+      }
+    };
 
     document.getElementById("btnAddPrinter").addEventListener("click", () => openPrinterModal());
     document.getElementById("btnModalClose").addEventListener("click", closePrinterModal);
@@ -1292,6 +1331,20 @@
         }
       } catch (err) {
         showToast(err.message);
+      }
+    });
+
+    document.getElementById("btnClearQueue").addEventListener("click", async () => {
+      if (!confirm("Bersihkan antrean spooler cetak yang macet di OS?")) return;
+      try {
+        logConsole("Membersihkan antrean print spooler...");
+        const res = await fetch("/printers/clear-queue", { method: "POST" });
+        const json = await res.json();
+        showToast(json.message || "Antrean dibersihkan");
+        logConsole(json.message || "Antrean dibersihkan", json.success ? "success" : "error");
+      } catch (err) {
+        showToast(err.message);
+        logConsole(`Error bersihkan antrean: ${err.message}`, "error");
       }
     });
 
