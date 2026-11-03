@@ -88,6 +88,36 @@ async function runEndpointTests() {
     assert.strictEqual(jsonClr.success, true);
     console.log("  ✔ Uji POST /printers/clear-queue lulus");
 
+    // 10. Uji POST /hw_drivers/action (Odoo Modern IoT Box)
+    const resActionMissing = await fetch("http://localhost:9999/hw_drivers/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, params: { action: "print_receipt" } }),
+    });
+    const jsonActionMissing = await resActionMissing.json();
+    assert.strictEqual(resActionMissing.status, 400);
+    assert.ok(jsonActionMissing.error);
+    console.log("  ✔ Uji POST /hw_drivers/action validasi data kosong lulus");
+
+    // 10b. Uji POST /hw_drivers/action dengan generic action
+    const resActionGeneric = await fetch("http://localhost:9999/hw_drivers/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, params: { action: "status" } }),
+    });
+    const jsonActionGeneric = await resActionGeneric.json();
+    assert.strictEqual(jsonActionGeneric.result, true);
+    console.log("  ✔ Uji POST /hw_drivers/action generic action lulus");
+
+    // 11. Uji POST /hw_proxy/print_xml_receipt validasi data kosong
+    const resXmlMissing = await fetch("http://localhost:9999/hw_proxy/print_xml_receipt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 4, params: {} }),
+    });
+    assert.strictEqual(resXmlMissing.status, 400);
+    console.log("  ✔ Uji POST /hw_proxy/print_xml_receipt validasi payload kosong lulus");
+
     console.log("✅ Semua pengujian Endpoint BERHASIL!\n");
   } finally {
     server.close();

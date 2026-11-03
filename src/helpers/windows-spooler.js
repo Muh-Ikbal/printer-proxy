@@ -25,6 +25,14 @@ function cleanPrinterName(rawName) {
   return name;
 }
 
+function cleanErrorMsg(raw) {
+  if (!raw) return "";
+  const msg = String(raw).trim();
+  const lines = msg.split("\n").map((l) => l.trim()).filter(Boolean);
+  const relevant = lines.find((l) => l.includes("[WinRawPrint]") || l.includes("[TextPrint]") || l.includes("Win32 Error"));
+  return relevant || lines[0] || msg;
+}
+
 /**
  * Kirim buffer/data teks atau mentah ke printer Windows melalui Windows Print Spooler atau Text Engine.
  * @param {{ printerName: string, data: string|Buffer, mode?: "auto"|"raw"|"text", docName?: string }} opts
@@ -81,7 +89,8 @@ function printRawWindows({ printerName, data, mode = "auto", docName = "PRINT_JO
       }
 
       if (err) {
-        const errMsg = (stderr || stdout || err.message).trim();
+        const rawErr = (stderr || stdout || err.message).trim();
+        const errMsg = cleanErrorMsg(rawErr);
         return reject(new Error(`Gagal cetak via Windows Spooler ke '${cleanName}': ${errMsg}`));
       }
 

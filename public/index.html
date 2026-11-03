@@ -871,8 +871,8 @@
               </button>
             </div>
             <input type="text" id="formPrinterTarget" required placeholder="misal: EPSON TM-T82, Canon G2000, atau /dev/usb/lp0">
-            <select id="selectDetectedWindowsPrinter" style="display:none; margin-top:6px; font-size: 0.82rem;" onchange="if(this.value){ document.getElementById('formPrinterTarget').value = this.value; }"></select>
-            <small style="color: var(--text-muted); font-size: 0.73rem;">Di Windows: pilih atau ketik nama printer persis seperti di Devices & Printers.</small>
+            <select id="selectDetectedWindowsPrinter" style="display:none; margin-top:6px; font-size: 0.82rem;" onchange="if(this.value){ document.getElementById('formPrinterTarget').value = this.value; if(!document.getElementById('formPrinterName').value){ document.getElementById('formPrinterName').value = this.value; } document.getElementById('formPrinterMode').value = 'printer'; }"></select>
+            <small style="color: var(--text-muted); font-size: 0.73rem;">Di Windows: pilih atau ketik nama printer persis seperti di Settings/Devices & Printers.</small>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">

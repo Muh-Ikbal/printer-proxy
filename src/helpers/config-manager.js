@@ -53,6 +53,15 @@ function loadData() {
         }
       }
 
+      // Pastikan defaultPrinter selalu terisi jika hanya ada satu printer
+      if (data && data.printers) {
+        const keys = Object.keys(data.printers);
+        if (keys.length === 1 && !data.defaultPrinter) {
+          data.defaultPrinter = keys[0];
+          saveData(data);
+        }
+      }
+
       return data;
     } catch (e) {
       console.warn("[ConfigManager] Gagal membaca printers.json, menggunakan default config:", e.message);

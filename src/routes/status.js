@@ -150,8 +150,7 @@ router.post("/printers/test", async (req, res) => {
     type.includes("dot") ||
     type.includes("matrix") ||
     mode === "standard" ||
-    mode === "gdi" ||
-    mode === "printer";
+    mode === "gdi";
 
   try {
     if (isDotMatrixOrStandard) {
@@ -192,7 +191,7 @@ router.post("/printers/test", async (req, res) => {
     }
 
     // Printer Thermal Kasir Standar (ESC/POS)
-    const printer = buildPrinter({ printerName });
+    const printer = buildPrinter({ printerName: pName });
     printer.alignCenter();
     printer.setTextDoubleHeight();
     printer.println("PRINT PROXY TEST");

@@ -20,6 +20,44 @@ if (-not (Test-Path -LiteralPath $FilePath)) {
     exit 2
 }
 
+# 1. Periksa ketersediaan printer di Windows dan lakukan Smart Resolution jika ada perbedaan penamaan
+$installedPrinters = @()
+try {
+    $installedPrinters = @(Get-CimInstance Win32_Printer -ErrorAction SilentlyContinue)
+} catch {
+    try {
+        $installedPrinters = @(Get-WmiObject Win32_Printer -ErrorAction SilentlyContinue)
+    } catch {}
+}
+
+$actualPrinter = $null
+if ($installedPrinters.Count -gt 0) {
+    # a. Exact match
+    $actualPrinter = $installedPrinters | Where-Object { $_.Name -eq $PrinterName } | Select-Object -First 1
+
+    # b. Case-insensitive match
+    if (-not $actualPrinter) {
+        $actualPrinter = $installedPrinters | Where-Object { $_.Name.ToLower() -eq $PrinterName.ToLower() } | Select-Object -First 1
+    }
+
+    # c. Smart Partial / Fuzzy match (misal mencari 'POS-80', di Windows terdaftar 'POS-80 Series' atau 'POS80')
+    if (-not $actualPrinter) {
+        $cleanSearch = ($PrinterName -replace "[-_\s]", "").ToLower()
+        $actualPrinter = $installedPrinters | Where-Object {
+            $nName = ($_.Name -replace "[-_\s]", "").ToLower()
+            $nName -match [regex]::Escape($cleanSearch) -or $cleanSearch -match [regex]::Escape($nName)
+        } | Select-Object -First 1
+    }
+
+    if ($actualPrinter) {
+        $PrinterName = $actualPrinter.Name
+    } else {
+        $printerNamesList = ($installedPrinters | ForEach-Object { "'$($_.Name)'" }) -join ", "
+        Write-Error "[WinRawPrint] Printer '$PrinterName' tidak ditemukan di Windows. Printer yang terpasang di sistem: [$printerNamesList]. Pastikan nama printer di proxy sesuai dengan Windows Devices & Printers atau install driver printer terlebih dahulu."
+        exit 1
+    }
+}
+
 # Fungsi cetak via Text Engine Windows (GDI) untuk Printer Biasa
 function Print-ViaTextEngine {
     param([string]$Prn, [string]$File)
@@ -168,16 +206,17 @@ try {
     Write-Output "OK"
     exit 0
 } catch {
-    # Jika gagal membuka atau menulis RAW di printer biasa, coba fallback ke Text Engine
-    if ($Mode -eq "auto") {
+    $rawError = $_.Exception.Message
+    # Hanya fallback ke Text Engine jika mode adalah auto DAN error BUKAN karena printer tidak ditemukan / Spooler mati
+    if ($Mode -eq "auto" -and -not ($rawError -match "Win32 Error: 1801|Win32 Error: 1722|tidak ditemukan")) {
         try {
             Print-ViaTextEngine -Prn $PrinterName -File $FilePath
         } catch {
-            Write-Error $_.Exception.Message
+            Write-Error "[WinRawPrint] Gagal cetak RAW ($rawError) dan gagal cetak Text Engine ($($_.Exception.Message))"
             exit 1
         }
     } else {
-        Write-Error $_.Exception.Message
+        Write-Error $rawError
         exit 1
     }
 }

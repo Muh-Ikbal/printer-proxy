@@ -5,8 +5,14 @@
   "printers": {
     "kasir1": {
       "mode": "usb",
+      "target": "/dev/usb/lp1",
+      "port": 8001,
+      "type": "epson"
+    },
+    "dotmatrix": {
+      "mode": "usb",
       "target": "/dev/usb/lp0",
-      "port": 8002,
+      "port": 8000,
       "type": "epson"
     }
   }
